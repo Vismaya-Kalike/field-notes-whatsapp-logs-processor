@@ -7,7 +7,8 @@ Filters out photos with clearly identifiable faces for privacy protection.
 import os
 import shutil
 from typing import List, Dict, Any, Tuple
-from face_detection import is_image_safe_for_display, batch_analyze_images
+from face_detection.face_detector import is_image_safe_for_display, batch_analyze_images
+from face_detection.constants import PRIVACY_KEYWORDS, SUPPORTED_FORMATS
 
 def filter_messages_by_privacy(messages: List[Dict[str, Any]],
                               media_dir: str = "whatsapp_data",
@@ -45,7 +46,7 @@ def filter_messages_by_privacy(messages: List[Dict[str, Any]],
     }
 
     # Image file extensions to check
-    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+    image_extensions = SUPPORTED_FORMATS
 
     for message in messages:
         # Always count messages with attachments

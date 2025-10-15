@@ -2,8 +2,14 @@ import cv2
 import numpy as np
 from typing import Tuple, List, Dict, Any
 import os
+from face_detection.constants import (
+    MIN_FACE_SIZE,
+    DETECTION_CONFIDENCE_THRESHOLD,
+    MAX_IMAGE_DIMENSION,
+    SUPPORTED_FORMATS
+)
 
-def detect_faces_in_image(image_path: str, min_face_size: Tuple[int, int] = (30, 30),
+def detect_faces_in_image(image_path: str, min_face_size: Tuple[int, int] = MIN_FACE_SIZE,
                          scale_factor: float = 1.1, min_neighbors: int = 5) -> Dict[str, Any]:
     """
     Detect faces in an image and determine if they are clearly identifiable.
@@ -48,8 +54,18 @@ def detect_faces_in_image(image_path: str, min_face_size: Tuple[int, int] = (30,
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         # Load OpenCV's pre-trained face detection classifiers
-        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        profile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_profileface.xml')
+        # Use the found cascade file paths
+        face_cascade_path = '/opt/homebrew/lib/python3.11/site-packages/cv2/data/haarcascade_frontalface_default.xml'
+        profile_cascade_path = '/opt/homebrew/lib/python3.11/site-packages/cv2/data/haarcascade_profileface.xml'
+
+        face_cascade = cv2.CascadeClassifier(face_cascade_path)
+        profile_cascade = cv2.CascadeClassifier(profile_cascade_path)
+
+        # Verify cascades loaded correctly
+        if face_cascade.empty():
+            raise RuntimeError(f"Could not load face cascade from {face_cascade_path}")
+        if profile_cascade.empty():
+            raise RuntimeError(f"Could not load profile cascade from {profile_cascade_path}")
 
         # Detect frontal faces
         frontal_faces = face_cascade.detectMultiScale(

@@ -7,10 +7,14 @@ Use this when you need to rerun the WhatsApp processing scripts from scratch.
 import os
 import sys
 import boto3
-import psycopg2
 import json
 from typing import Optional, List
 from dotenv import load_dotenv
+from database.connection import DatabaseManager
+from database.report_service import ReportService
+from database.image_service import ImageService
+from database.message_service import MessageService
+from database.analysis_service import AnalysisService
 
 load_dotenv()
 
@@ -21,13 +25,15 @@ class ReportCleanup:
         Initialize the cleanup tool.
 
         Args:
-            delete_s3 (bool): If True, also delete files from S3 bucket. 
+            delete_s3 (bool): If True, also delete files from S3 bucket.
                             This is dangerous and may cost storage egress fees.
         """
-        # Database configuration
-        self.db_url = os.getenv('DATABASE_URL')
-        if not self.db_url:
-            raise ValueError("DATABASE_URL environment variable is required")
+        # Initialize database manager and services
+        self.db_manager = DatabaseManager()
+        self.report_service = ReportService(self.db_manager)
+        self.image_service = ImageService(self.db_manager)
+        self.message_service = MessageService(self.db_manager)
+        self.analysis_service = AnalysisService(self.db_manager)
 
         self.delete_s3 = delete_s3
 
@@ -56,47 +62,38 @@ class ReportCleanup:
         # Name anonymization mapping file
         self.name_mapping_file = "name_anonymization_mapping.json"
 
-    def get_db_connection(self):
-        """Create and return a database connection."""
-        return psycopg2.connect(self.db_url)
-
-    def count_records(self) -> dict:
+    def count_records(self, month: Optional[int] = None, year: Optional[int] = None) -> dict:
         """Count all records that will be deleted."""
         counts = {}
 
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Count generated reports
-                cur.execute("SELECT COUNT(*) FROM generated_reports")
-                counts['reports'] = cur.fetchone()[0]
+        # Count reports
+        counts['reports'] = self.report_service.count_reports_by_date(month, year)
 
-                # Count images
-                cur.execute("SELECT COUNT(*) FROM generated_report_images")
-                counts['images'] = cur.fetchone()[0]
+        if counts['reports'] > 0:
+            # Get report IDs for counting related records
+            report_ids = self.report_service.get_report_ids_by_date(month, year)
 
-                # Count messages
-                cur.execute("SELECT COUNT(*) FROM generated_report_messages")
-                counts['messages'] = cur.fetchone()[0]
-
-                # Count LLM analyses
-                cur.execute(
-                    "SELECT COUNT(*) FROM generated_report_llm_analysis")
-                counts['llm_analyses'] = cur.fetchone()[0]
+            # Count related records
+            counts['images'] = self.image_service.count_images_by_report_ids(report_ids)
+            counts['messages'] = self.message_service.count_messages_by_report_ids(report_ids)
+            counts['llm_analyses'] = self.analysis_service.count_analyses_by_report_ids(report_ids)
+        else:
+            counts['images'] = 0
+            counts['messages'] = 0
+            counts['llm_analyses'] = 0
 
         return counts
 
-    def get_s3_image_urls(self) -> List[str]:
+    def get_s3_image_urls(self, month: Optional[int] = None, year: Optional[int] = None) -> List[str]:
         """Get all S3 image URLs from the database."""
-        urls = []
+        # Get report IDs for the date filter
+        report_ids = self.report_service.get_report_ids_by_date(month, year)
 
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT photo_url FROM generated_report_images WHERE photo_url IS NOT NULL")
-                results = cur.fetchall()
-                urls = [row[0] for row in results]
+        if not report_ids:
+            return []
 
-        return urls
+        # Get image URLs for these reports
+        return self.image_service.get_image_urls_by_report_ids(report_ids)
 
     def delete_from_s3(self, s3_urls: List[str]) -> int:
         """Delete files from S3 bucket."""
@@ -134,35 +131,38 @@ class ReportCleanup:
 
         return deleted_count
 
-    def delete_database_records(self):
-        """Delete all records from database tables (in correct order)."""
-        with self.get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Delete in order of foreign key dependencies
-                print("   Deleting LLM analyses...")
-                cur.execute("DELETE FROM generated_report_llm_analysis")
-                llm_deleted = cur.rowcount
+    def delete_database_records(self, month: Optional[int] = None, year: Optional[int] = None):
+        """Delete records from database tables (in correct order)."""
+        # Get report IDs to delete
+        report_ids = self.report_service.get_report_ids_by_date(month, year)
 
-                print("   Deleting report images...")
-                cur.execute("DELETE FROM generated_report_images")
-                images_deleted = cur.rowcount
+        if not report_ids:
+            return {
+                'reports': 0,
+                'images': 0,
+                'messages': 0,
+                'llm_analyses': 0
+            }
 
-                print("   Deleting report messages...")
-                cur.execute("DELETE FROM generated_report_messages")
-                messages_deleted = cur.rowcount
+        # Delete in order of foreign key dependencies using services
+        print("   Deleting LLM analyses...")
+        llm_deleted = self.analysis_service.delete_analyses_by_report_ids(report_ids)
 
-                print("   Deleting generated reports...")
-                cur.execute("DELETE FROM generated_reports")
-                reports_deleted = cur.rowcount
+        print("   Deleting report images...")
+        images_deleted = self.image_service.delete_images_by_report_ids(report_ids)
 
-                conn.commit()
+        print("   Deleting report messages...")
+        messages_deleted = self.message_service.delete_messages_by_report_ids(report_ids)
 
-                return {
-                    'reports': reports_deleted,
-                    'images': images_deleted,
-                    'messages': messages_deleted,
-                    'llm_analyses': llm_deleted
-                }
+        print("   Deleting generated reports...")
+        reports_deleted = self.report_service.delete_reports_by_date(month, year)
+
+        return {
+            'reports': reports_deleted,
+            'images': images_deleted,
+            'messages': messages_deleted,
+            'llm_analyses': llm_deleted
+        }
 
     def clear_name_mappings(self):
         """Clear the name anonymization mappings file."""
@@ -191,20 +191,30 @@ class ReportCleanup:
             print("   No name mappings file found")
             return False
 
-    def cleanup(self, clear_name_mappings: bool = True):
+    def cleanup(self, clear_name_mappings: bool = True, month: Optional[int] = None, year: Optional[int] = None):
         """
         Perform the full cleanup operation.
 
         Args:
             clear_name_mappings (bool): If True, also clear the name anonymization mappings
+            month (int, optional): Only delete reports from this month (requires year)
+            year (int, optional): Only delete reports from this year
         """
         print("\n" + "=" * 70)
         print("🧹 REPORT CLEANUP TOOL")
         print("=" * 70)
 
+        # Show what will be cleaned up
+        if month is not None and year is not None:
+            print(f"\n🎯 Target: Reports from {month}/{year}")
+        elif year is not None:
+            print(f"\n🎯 Target: All reports from {year}")
+        else:
+            print(f"\n🎯 Target: ALL REPORTS (no date filter)")
+
         # Count records
         print("\n📊 Counting records to be deleted...")
-        counts = self.count_records()
+        counts = self.count_records(month, year)
 
         print(f"\n   Reports: {counts['reports']}")
         print(f"   Images: {counts['images']}")
@@ -212,14 +222,19 @@ class ReportCleanup:
         print(f"   LLM Analyses: {counts['llm_analyses']}")
 
         if counts['reports'] == 0:
-            print("\n✅ No records found. Database is already clean!")
+            if month is not None and year is not None:
+                print(f"\n✅ No records found for {month}/{year}. Nothing to clean!")
+            elif year is not None:
+                print(f"\n✅ No records found for {year}. Nothing to clean!")
+            else:
+                print("\n✅ No records found. Database is already clean!")
             return
 
         # Get S3 URLs if needed
         s3_urls = []
         if self.delete_s3 and counts['images'] > 0:
             print("\n📸 Getting S3 image URLs...")
-            s3_urls = self.get_s3_image_urls()
+            s3_urls = self.get_s3_image_urls(month, year)
             print(f"   Found {len(s3_urls)} images in S3")
 
         # Confirm deletion
@@ -250,7 +265,7 @@ class ReportCleanup:
 
         # Delete from database
         print("\n🗄️  Deleting records from database...")
-        deleted = self.delete_database_records()
+        deleted = self.delete_database_records(month, year)
 
         print(f"\n   ✅ Deleted {deleted['reports']} reports")
         print(f"   ✅ Deleted {deleted['images']} image records")
@@ -278,15 +293,21 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Delete database records only (keep S3 files):
+  # Delete ALL database records (keep S3 files):
   python cleanup_reports.py
-  
-  # Delete database records and S3 files:
-  python cleanup_reports.py --delete-s3
-  
+
+  # Delete reports for a specific month/year:
+  python cleanup_reports.py --month 9 --year 2025
+
+  # Delete all reports from a specific year:
+  python cleanup_reports.py --year 2025
+
+  # Delete database records and S3 files for specific month:
+  python cleanup_reports.py --month 9 --year 2025 --delete-s3
+
   # Delete everything except name mappings:
   python cleanup_reports.py --delete-s3 --keep-name-mappings
-  
+
 Note: S3 deletion is disabled by default to prevent accidental data loss.
       Enable with --delete-s3 flag only if you're sure.
         """
@@ -304,11 +325,32 @@ Note: S3 deletion is disabled by default to prevent accidental data loss.
         help='Keep the name anonymization mappings (do not clear)'
     )
 
+    parser.add_argument(
+        '--month',
+        type=int,
+        choices=range(1, 13),
+        help='Only delete reports from this specific month (1-12, requires --year)'
+    )
+
+    parser.add_argument(
+        '--year',
+        type=int,
+        help='Only delete reports from this specific year (or all months in year if --month not specified)'
+    )
+
     args = parser.parse_args()
+
+    # Validate month/year combination
+    if args.month is not None and args.year is None:
+        parser.error("--month requires --year to be specified")
 
     try:
         cleanup = ReportCleanup(delete_s3=args.delete_s3)
-        cleanup.cleanup(clear_name_mappings=not args.keep_name_mappings)
+        cleanup.cleanup(
+            clear_name_mappings=not args.keep_name_mappings,
+            month=args.month,
+            year=args.year
+        )
     except KeyboardInterrupt:
         print("\n\n❌ Cleanup interrupted by user")
         sys.exit(1)
