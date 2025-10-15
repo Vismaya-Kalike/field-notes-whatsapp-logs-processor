@@ -33,23 +33,97 @@ def extract_messages_by_month(file_path: str, month: int, year: int) -> List[Dic
     attachment_pattern = r'(.+\.(?:jpg|jpeg|png|gif|webp|mp4|mov|avi|webm|mp3|wav|ogg|m4a|opus|pdf|doc|docx)) \(file attached\)'
 
     with open(file_path, 'r', encoding='utf-8') as file:
-        for line in file:
-            line = line.strip()
+        lines = file.readlines()
 
-            # Skip system messages and empty lines
-            if not line or 'Messages and calls are end-to-end encrypted' in line or 'added' in line or 'created group' in line or 'changed this group' in line:
-                continue
+    current_message = None
+    i = 0
 
-            # Try new format first (DD/MM/YY, HH:MM)
-            match = re.match(new_message_pattern, line)
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Skip system messages and empty lines
+        if not line or 'Messages and calls are end-to-end encrypted' in line or 'added' in line or 'created group' in line or 'changed this group' in line:
+            i += 1
+            continue
+
+        # Try new format first (DD/MM/YY, HH:MM)
+        match = re.match(new_message_pattern, line)
+        if match:
+            date_str, time_str, username, message_content = match.groups()
+
+            # Parse the date
+            try:
+                # New WhatsApp format: DD/MM/YY HH:MM (24-hour format)
+                full_datetime_str = f"{date_str} {time_str}"
+                timestamp = datetime.strptime(full_datetime_str, '%d/%m/%y %H:%M')
+
+                # Handle 2-digit year: assume 20XX for years 00-99
+                if timestamp.year < 2000:
+                    timestamp = timestamp.replace(year=timestamp.year + 100)
+
+                # Check if this message is from the requested month/year
+                if timestamp.month == month and timestamp.year == year:
+                    # Collect continuation lines for this message
+                    full_message_content = message_content
+                    j = i + 1
+
+                    # Look ahead for continuation lines (lines that don't start with timestamp)
+                    while j < len(lines):
+                        next_line = lines[j].strip()
+                        if not next_line:
+                            j += 1
+                            continue
+
+                        # Check if next line is a new message (has timestamp pattern)
+                        if (re.match(new_message_pattern, next_line) or
+                            re.match(old_message_pattern, next_line)):
+                            break
+
+                        # This is a continuation line, add it to the message
+                        full_message_content += " " + next_line
+                        j += 1
+
+                    # Update iterator to skip processed continuation lines
+                    i = j - 1
+
+                    # Check for attachments in the full message content
+                    attachment_match = re.search(attachment_pattern, full_message_content)
+                    has_attachment = bool(attachment_match)
+                    attachment_filename = attachment_match.group(1) if attachment_match else None
+
+                    # Clean up the message content (remove attachment markers)
+                    clean_message = re.sub(attachment_pattern, '', full_message_content).strip()
+
+                    # Clean up username (remove phone numbers, keep readable names)
+                    clean_username = username.strip()
+
+                    message_dict = {
+                        'timestamp': timestamp,
+                        'username': clean_username,
+                        'message': clean_message,
+                        'has_attachment': has_attachment,
+                        'attachment_filename': attachment_filename
+                    }
+
+                    messages.append(message_dict)
+
+            except ValueError:
+                # Skip lines that don't match the expected date format
+                pass
+
+        else:
+            # Try old format ([M/D/YY, H:MM:SS AM/PM])
+            match = re.match(old_message_pattern, line)
             if match:
                 date_str, time_str, username, message_content = match.groups()
 
                 # Parse the date
                 try:
-                    # New WhatsApp format: DD/MM/YY HH:MM (24-hour format)
-                    full_datetime_str = f"{date_str} {time_str}"
-                    timestamp = datetime.strptime(full_datetime_str, '%d/%m/%y %H:%M')
+                    # Old WhatsApp format: M/D/YY with special Unicode characters
+                    # Clean up the time string by replacing Unicode characters with regular space
+                    clean_time_str = time_str.replace('\u202f', ' ')
+                    full_datetime_str = f"{date_str} {clean_time_str}"
+                    timestamp = datetime.strptime(full_datetime_str, '%m/%d/%y %I:%M:%S %p')
 
                     # Handle 2-digit year: assume 20XX for years 00-99
                     if timestamp.year < 2000:
@@ -57,16 +131,40 @@ def extract_messages_by_month(file_path: str, month: int, year: int) -> List[Dic
 
                     # Check if this message is from the requested month/year
                     if timestamp.month == month and timestamp.year == year:
+                        # Collect continuation lines for this message
+                        full_message_content = message_content
+                        j = i + 1
+
+                        # Look ahead for continuation lines (lines that don't start with timestamp)
+                        while j < len(lines):
+                            next_line = lines[j].strip()
+                            if not next_line:
+                                j += 1
+                                continue
+
+                            # Check if next line is a new message (has timestamp pattern)
+                            if (re.match(new_message_pattern, next_line) or
+                                re.match(old_message_pattern, next_line)):
+                                break
+
+                            # This is a continuation line, add it to the message
+                            full_message_content += " " + next_line
+                            j += 1
+
+                        # Update iterator to skip processed continuation lines
+                        i = j - 1
+
                         # Check for attachments
-                        attachment_match = re.search(attachment_pattern, message_content)
+                        old_attachment_pattern = r'(?:\u200e)?<attached: ([^>]+)>'
+                        attachment_match = re.search(old_attachment_pattern, full_message_content)
                         has_attachment = bool(attachment_match)
                         attachment_filename = attachment_match.group(1) if attachment_match else None
 
                         # Clean up the message content (remove attachment markers)
-                        clean_message = re.sub(attachment_pattern, '', message_content).strip()
+                        clean_message = re.sub(old_attachment_pattern, '', full_message_content).strip()
 
-                        # Clean up username (remove phone numbers, keep readable names)
-                        clean_username = username.strip()
+                        # Clean up username (remove Unicode characters)
+                        clean_username = username.replace('\u202f', ' ').strip()
 
                         message_dict = {
                             'timestamp': timestamp,
@@ -80,52 +178,10 @@ def extract_messages_by_month(file_path: str, month: int, year: int) -> List[Dic
 
                 except ValueError:
                     # Skip lines that don't match the expected date format
-                    continue
-            else:
-                # Try old format ([M/D/YY, H:MM:SS AM/PM])
-                match = re.match(old_message_pattern, line)
-                if match:
-                    date_str, time_str, username, message_content = match.groups()
+                    pass
 
-                    # Parse the date
-                    try:
-                        # Old WhatsApp format: M/D/YY with special Unicode characters
-                        # Clean up the time string by replacing Unicode characters with regular space
-                        clean_time_str = time_str.replace('\u202f', ' ')
-                        full_datetime_str = f"{date_str} {clean_time_str}"
-                        timestamp = datetime.strptime(full_datetime_str, '%m/%d/%y %I:%M:%S %p')
-
-                        # Handle 2-digit year: assume 20XX for years 00-99
-                        if timestamp.year < 2000:
-                            timestamp = timestamp.replace(year=timestamp.year + 100)
-
-                        # Check if this message is from the requested month/year
-                        if timestamp.month == month and timestamp.year == year:
-                            # Check for attachments
-                            old_attachment_pattern = r'(?:\u200e)?<attached: ([^>]+)>'
-                            attachment_match = re.search(old_attachment_pattern, message_content)
-                            has_attachment = bool(attachment_match)
-                            attachment_filename = attachment_match.group(1) if attachment_match else None
-
-                            # Clean up the message content (remove attachment markers)
-                            clean_message = re.sub(old_attachment_pattern, '', message_content).strip()
-
-                            # Clean up username (remove Unicode characters)
-                            clean_username = username.replace('\u202f', ' ').strip()
-
-                            message_dict = {
-                                'timestamp': timestamp,
-                                'username': clean_username,
-                                'message': clean_message,
-                                'has_attachment': has_attachment,
-                                'attachment_filename': attachment_filename
-                            }
-
-                            messages.append(message_dict)
-
-                    except ValueError:
-                        # Skip lines that don't match the expected date format
-                        continue
+        # Move to next line
+        i += 1
 
     # Sort messages by timestamp
     messages.sort(key=lambda x: x['timestamp'])

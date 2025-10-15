@@ -233,7 +233,18 @@ class LLMAnalyzer:
         has_images = len(safe_images) > 0
         has_sufficient_text = len(text_messages) >= MIN_MESSAGES_FOR_ANALYSIS
 
-        return has_images or has_sufficient_text
+        # More sophisticated viability checking
+        if not has_images and not has_sufficient_text:
+            return False
+
+        # If we only have text messages, check for meaningful content length
+        if not has_images and has_sufficient_text:
+            total_text_length = sum(len(msg.get('text', '').strip()) for msg in text_messages)
+            # Need reasonable amount of text content if no images
+            return total_text_length >= 50
+
+        # If we have images, analysis is generally viable
+        return has_images
 
     def get_analysis_summary(self, safe_images: List[Dict], text_messages: List[Dict]) -> Dict[str, int]:
         """

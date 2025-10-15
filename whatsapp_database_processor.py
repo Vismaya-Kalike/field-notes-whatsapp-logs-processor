@@ -88,7 +88,6 @@ class WhatsAppDatabaseProcessor:
         """Create and return a database connection."""
         return self.db_manager.get_connection()
 
-
     def find_facilitator_by_sender(self, sender_name: str) -> Optional[str]:
         """
         Find facilitator by matching sender name against name, alias, and contact_number fields.
@@ -112,12 +111,14 @@ class WhatsAppDatabaseProcessor:
                                 images_count: int, messages_count: int) -> str:
         """Create a new generated report and return its ID."""
         # Get learning centre from facilitator relationship
-        learning_centre_id = self.get_facilitator_learning_centre(facilitator_id)
+        learning_centre_id = self.get_facilitator_learning_centre(
+            facilitator_id)
 
         if not learning_centre_id:
             # Fallback to default centre if no relationship exists
             learning_centre_id = self.get_or_create_default_centre()
-            print(f"   ⚠️  No learning centre found for facilitator, using default centre")
+            print(
+                f"   ⚠️  No learning centre found for facilitator, using default centre")
 
         return self.report_service.create_report(
             facilitator_id, learning_centre_id, month, year,
@@ -127,7 +128,6 @@ class WhatsAppDatabaseProcessor:
     def get_or_create_default_centre(self) -> str:
         """Get or create a default learning centre for reports."""
         return self.facilitator_service.create_learning_centre_if_needed("SAKHI VK Default Centre")
-
 
     def process_text_messages(self, safe_messages: List[Dict], filtered_messages: List[Dict],
                               report_id: str, facilitator_id: str) -> List[Dict]:
@@ -161,11 +161,11 @@ class WhatsAppDatabaseProcessor:
 
         # Store messages in batch
         if message_batch:
-            stored_count = self.message_service.store_messages_batch(message_batch)
+            stored_count = self.message_service.store_messages_batch(
+                message_batch)
             print(f"   💬 Processed {stored_count} text messages (anonymized)")
 
         return processed_messages
-
 
     def process_whatsapp_messages(self, file_path: str, month: int, year: int,
                                   media_dir: str = "whatsapp_data") -> Dict[str, Any]:
@@ -238,15 +238,18 @@ class WhatsAppDatabaseProcessor:
                 print("   🔍 Running face detection filter...")
 
                 # Show initial counts
-                initial_attachments = len([m for m in sender_messages if m.get('has_attachment')])
+                initial_attachments = len(
+                    [m for m in sender_messages if m.get('has_attachment')])
                 initial_total = len(sender_messages)
-                print(f"      📊 Initial counts - Total messages: {initial_total}, Messages with attachments: {initial_attachments}")
+                print(
+                    f"      📊 Initial counts - Total messages: {initial_total}, Messages with attachments: {initial_attachments}")
 
                 safe_messages, filtered_messages, analysis_report = filter_messages_by_privacy(
                     sender_messages, media_dir, strict_mode=False, ultra_conservative=True
                 )
 
-                print(f"      🔍 After privacy filter - Safe: {len(safe_messages)}, Filtered: {len(filtered_messages)}")
+                print(
+                    f"      🔍 After privacy filter - Safe: {len(safe_messages)}, Filtered: {len(filtered_messages)}")
                 if analysis_report.get('filtering_reasons'):
                     for reason, count in analysis_report['filtering_reasons'].items():
                         print(f"         • {reason}: {count}")
@@ -261,12 +264,14 @@ class WhatsAppDatabaseProcessor:
                 # Step 7: Get text messages count (without storing yet)
                 print("   💬 Counting text messages...")
                 from utils.message_processor import filter_text_messages
-                text_messages_preview = filter_text_messages(safe_messages, filtered_messages)
+                text_messages_preview = filter_text_messages(
+                    safe_messages, filtered_messages)
                 actual_messages_count = len(text_messages_preview)
 
                 # Step 8: Create generated report with accurate counts
                 print("   📝 Creating generated report...")
-                print(f"      📊 Final counts - Images: {actual_images_count}, Messages: {actual_messages_count}")
+                print(
+                    f"      📊 Final counts - Images: {actual_images_count}, Messages: {actual_messages_count}")
                 report_id = self.create_generated_report(
                     facilitator_id, month, year, actual_images_count, actual_messages_count
                 )
@@ -282,7 +287,8 @@ class WhatsAppDatabaseProcessor:
                             'sent_at': img['sent_at']
                         })
 
-                    stored_images = self.image_service.store_images_batch(image_batch)
+                    stored_images = self.image_service.store_images_batch(
+                        image_batch)
                     print(f"   📸 Stored {stored_images} images in database")
 
                 # Step 10: Process and store text messages
@@ -291,22 +297,31 @@ class WhatsAppDatabaseProcessor:
                     safe_messages, filtered_messages, report_id, facilitator_id
                 )
 
-                # Step 11: Generate LLM analysis with images
-                print("   🤖 Generating LLM analysis with visual content...")
-                llm_analysis = self.llm_analyzer.generate_comprehensive_analysis(
-                    sender_name, safe_images, text_messages)
+                # Step 11: Check if LLM analysis is viable and generate if so
+                print("   🤖 Checking if LLM analysis is viable...")
+                if self.llm_analyzer.is_analysis_viable(safe_images, text_messages):
+                    print("   🤖 Generating LLM analysis with visual content...")
+                    llm_analysis = self.llm_analyzer.generate_comprehensive_analysis(
+                        sender_name, safe_images, text_messages)
 
-                if llm_analysis:
-                    # Store analysis using analysis service
-                    analysis_stored = self.analysis_service.store_analysis(report_id, llm_analysis)
-                    if analysis_stored:
-                        # Update report to indicate analysis is available
-                        self.report_service.update_report_analysis_status(report_id, True)
-                        print("   ✅ LLM analysis with images stored")
+                    if llm_analysis:
+                        # Store analysis using analysis service
+                        analysis_stored = self.analysis_service.store_analysis(
+                            report_id, llm_analysis)
+                        if analysis_stored:
+                            # Update report to indicate analysis is available
+                            self.report_service.update_report_analysis_status(
+                                report_id, True)
+                            print("   ✅ LLM analysis with images stored")
+                        else:
+                            print("   ⚠️  Failed to store LLM analysis")
                     else:
-                        print("   ⚠️  Failed to store LLM analysis")
+                        print("   ⚠️  LLM analysis generation failed")
+                        llm_analysis = None
                 else:
-                    print("   ⚠️  LLM analysis not available")
+                    print(
+                        "   ⏭️  Skipping LLM analysis - insufficient meaningful content")
+                    llm_analysis = None
 
                 results['processed_reports'].append({
                     'sender': sender_name,

@@ -13,24 +13,30 @@ def filter_text_messages(safe_messages: List[Dict], filtered_messages: List[Dict
 
     Args:
         safe_messages: List of safe message dictionaries
-        filtered_messages: List of filtered message dictionaries
+        filtered_messages: List of filtered message dictionaries (includes messages with problematic images)
 
     Returns:
         List of filtered text messages ready for processing
     """
     text_messages = []
-    all_messages = safe_messages + filtered_messages
 
-    for msg in all_messages:
-        if msg.get('message', '').strip() and not msg.get('has_attachment'):
+
+    # Process ALL safe messages that have text content (whether they have attachments or not)
+    for msg in safe_messages:
+        if msg.get('message', '').strip():
             message_text = msg['message'].strip()
 
-            # Skip short or administrative messages
-            if len(message_text) < MIN_MESSAGE_LENGTH:
-                continue
+            # Only skip short messages
+            if len(message_text) >= MIN_MESSAGE_LENGTH:
+                text_messages.append(msg)
 
-            # Skip administrative messages
-            if not any(skip_phrase in message_text.lower() for skip_phrase in ADMINISTRATIVE_SKIP_PHRASES):
+    # IMPORTANT: Also extract text from ALL filtered messages (whether they have attachments or not)
+    # These were filtered for various reasons, but their text content can still be valuable
+    for msg in filtered_messages:
+        if msg.get('message', '').strip():
+            message_text = msg['message'].strip()
+            # Only skip short messages
+            if len(message_text) >= MIN_MESSAGE_LENGTH:
                 text_messages.append(msg)
 
     return text_messages
@@ -38,7 +44,7 @@ def filter_text_messages(safe_messages: List[Dict], filtered_messages: List[Dict
 
 def filter_administrative_messages(messages: List[Dict]) -> List[Dict]:
     """
-    Filter out administrative and system messages
+    Filter out short messages (no longer filtering administrative phrases)
 
     Args:
         messages: List of message dictionaries
@@ -52,12 +58,8 @@ def filter_administrative_messages(messages: List[Dict]) -> List[Dict]:
         if msg.get('message', '').strip():
             message_text = msg['message'].strip()
 
-            # Skip short messages
-            if len(message_text) < MIN_MESSAGE_LENGTH:
-                continue
-
-            # Skip administrative messages
-            if not any(skip_phrase in message_text.lower() for skip_phrase in ADMINISTRATIVE_SKIP_PHRASES):
+            # Only skip short messages
+            if len(message_text) >= MIN_MESSAGE_LENGTH:
                 filtered.append(msg)
 
     return filtered
@@ -65,18 +67,18 @@ def filter_administrative_messages(messages: List[Dict]) -> List[Dict]:
 
 def is_administrative_message(message_text: str) -> bool:
     """
-    Check if a message is administrative/system generated
+    Check if a message is too short (no longer checking administrative phrases)
 
     Args:
         message_text: The message text to check
 
     Returns:
-        True if message is administrative, False otherwise
+        True if message is too short, False otherwise
     """
     if not message_text or len(message_text.strip()) < MIN_MESSAGE_LENGTH:
         return True
 
-    return any(skip_phrase in message_text.lower() for skip_phrase in ADMINISTRATIVE_SKIP_PHRASES)
+    return False
 
 
 def prepare_messages_for_analysis(messages: List[Dict]) -> List[Dict]:

@@ -18,14 +18,16 @@ def get_comprehensive_analysis_prompt(facilitator_name: str, field_notes: list, 
     field_notes_text = '\n'.join(
         field_notes) if field_notes else 'Limited text messages - analysis should focus primarily on visual documentation.'
 
-    return f"""You are analyzing field reports from a teacher/social worker named {facilitator_name} who works with Vismaya Kalike, a social service organization in India.
+    return f"""You are analyzing field notes from a learning facilitator named {facilitator_name}. The facilitator works with oppressed communities and creates after school learning spaces with a view to build agency. Spaces are designed to be safe, open, joyful and self-determined where learners can make their own decisions. 
 
-    CONTEXT: This person shares photos of their work activities, teaching sessions, community outreach, and field notes about their daily work with students and community members. Since facilitators often prefer sending images over text, the visual content is crucial for understanding their work.
+    CONTEXT: The facilitator has shared photos as well as some field notes. Since facilitators often prefer sending images over text, the visual content is crucial for understanding their work.
 
     INSTRUCTIONS:
-    - Analyze both the images and text messages to understand what activities this person is doing
-    - Focus on educational activities, community work, social services, and teaching-related content visible in the images
-    - The images show real field work activities - describe what you see in terms of educational impact
+    - Analyze both the images and text messages to understand what is happening at the learning center
+    - Observe if the learning center is safe, open, joyful and self-determined
+    - Make a note if there is play happening in the learning centers
+    - Check if the learning center is different from school like spaces
+    - The images show real field work activities - describe what you see and avoid making assumptions
     - Create a comprehensive field work report based on visual evidence and text notes
     - Pay special attention to the visual documentation as it's the primary way this facilitator communicates their work
 
@@ -34,15 +36,7 @@ def get_comprehensive_analysis_prompt(facilitator_name: str, field_notes: list, 
 
     IMAGES PROVIDED: {images_count} work-related photos showing field activities
 
-    Based on the visual evidence and text data, please provide a comprehensive field work analysis report covering:
-
-    1. **Visual Documentation Analysis**: What activities, teaching sessions, and community work are visible in the images?
-    2. **Educational Impact**: What evidence of learning, student engagement, or educational outcomes can you observe?
-    3. **Community Engagement**: How is the facilitator interacting with students, parents, or community members?
-    4. **Work Patterns and Methods**: What teaching methods, materials, or approaches are visible?
-    5. **Overall Assessment**: Based on the visual and text evidence, how would you assess this facilitator's contributions to ViKa's mission?
-
-    Write this as a professional field work assessment report that recognizes the visual documentation as the primary evidence of the facilitator's work and impact. Also write this as the facilitator would be writing it to the outside world. Don't make up any details and don't add any details that are not in the text messages or images. It's okay if the report is short and doesn't have a lot of details."""
+    Write this as a professional field work assessment report that recognizes the visual documentation as the primary evidence of the facilitator's work and impact. Don't make up any details and don't add any details that are not in the text messages or images. Don't include the messages and photos in the report. You don't have to describe each photo. You don't need to include the purpose or details about the organisation. It's okay if the report is short and doesn't have a lot of details. Do not include any title or date in the report."""
 
 
 def get_text_only_analysis_prompt(facilitator_name: str, field_notes: list, images_count: int) -> str:
