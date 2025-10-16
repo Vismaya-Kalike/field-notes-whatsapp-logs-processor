@@ -17,8 +17,8 @@ TABLES = {
     'learning_centres': 'learning_centres',
     'partner_organisations': 'partner_organisations',
     'generated_reports': 'generated_reports',
-    'generated_report_images': 'generated_report_images',
-    'generated_report_messages': 'generated_report_messages',
+    'field_images': 'field_images',
+    'field_notes': 'field_notes',
     'generated_report_llm_analysis': 'generated_report_llm_analysis',
     'generated_reports_summary': 'generated_reports_summary'
 }

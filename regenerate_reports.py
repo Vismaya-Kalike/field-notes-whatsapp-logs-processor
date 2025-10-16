@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from database.connection import DatabaseManager
 from database.facilitator_service import FacilitatorService
 from database.report_service import ReportService
+from database.child_service import ChildService
 from database.image_service import ImageService
 from database.message_service import MessageService
 from database.analysis_service import AnalysisService
@@ -33,8 +34,9 @@ class ReportRegenerator:
         self.db_manager = DatabaseManager()
         self.facilitator_service = FacilitatorService(self.db_manager)
         self.report_service = ReportService(self.db_manager)
+        self.child_service = ChildService(self.db_manager)
         self.image_service = ImageService(self.db_manager)
-        self.message_service = MessageService(self.db_manager)
+        self.message_service = MessageService(self.db_manager, self.child_service)
         self.analysis_service = AnalysisService(self.db_manager)
 
         # Initialize S3 uploader for image processing
@@ -48,7 +50,7 @@ class ReportRegenerator:
                 "AWS S3 configuration is incomplete. Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, and S3_BUCKET_NAME")
 
         # Initialize components for LLM analysis
-        self.name_anonymizer = NameAnonymizer()
+        self.name_anonymizer = NameAnonymizer(self.child_service)
         self.s3_uploader = S3ImageUploader(
             self.aws_access_key,
             self.aws_secret_key,
@@ -95,15 +97,9 @@ class ReportRegenerator:
                 return []
 
         # Get all reports that match criteria
+        reports: List[Dict[str, Any]] = []
         if facilitator_id:
-            # Get reports for specific facilitator
             reports = self.report_service.get_reports_by_facilitator(facilitator_id)
-
-            # Filter by date if specified
-            if month is not None and year is not None:
-                reports = [r for r in reports if r[3] == month and r[4] == year]  # month and year columns
-            elif year is not None:
-                reports = [r for r in reports if r[4] == year]  # year column
         else:
             # Get all report IDs for the date filter
             report_ids = self.report_service.get_report_ids_by_date(month, year)
@@ -111,29 +107,18 @@ class ReportRegenerator:
                 return []
 
             # Get full report records
-            reports = []
             for report_id in report_ids:
                 report = self.report_service.get_report_by_id(report_id)
                 if report:
                     reports.append(report)
 
-        # Convert to list of dicts for easier handling
-        report_dicts = []
-        for report in reports:
-            report_dict = {
-                'id': report[0],
-                'facilitator_id': report[1],
-                'learning_centre_id': report[2],
-                'month': report[3],
-                'year': report[4],
-                'images_count': report[5],
-                'messages_count': report[6],
-                'has_llm_analysis': report[7],
-                'created_at': report[8] if len(report) > 8 else None
-            }
-            report_dicts.append(report_dict)
+        # Apply date filters if provided (covers both facilitator-specific and general lookups)
+        if month is not None and year is not None:
+            reports = [r for r in reports if r['month'] == month and r['year'] == year]
+        elif year is not None:
+            reports = [r for r in reports if r['year'] == year]
 
-        return report_dicts
+        return reports
 
     def get_report_data(self, report_id: str) -> Dict[str, Any]:
         """

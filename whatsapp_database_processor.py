@@ -9,7 +9,7 @@ import requests
 import json
 import re
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Set
 from urllib.parse import urlparse
 from face_detection.privacy_filter import filter_messages_by_privacy
 from utils.date_filter import extract_messages_by_month
@@ -21,6 +21,7 @@ from image_processor.s3_uploader import S3ImageUploader
 from image_processor.image_processor import ImageProcessor
 from llm_analyzer.llm_analyzer import LLMAnalyzer
 from database.connection import DatabaseManager
+from database.child_service import ChildService
 from database.facilitator_service import FacilitatorService
 from database.report_service import ReportService
 from database.image_service import ImageService
@@ -37,6 +38,10 @@ except ImportError:
     print("OpenAI library not available. Install with: pip install openai")
 
 
+class UserAbortError(Exception):
+    """Raised when the operator cancels processing after anonymization review."""
+
+
 class WhatsAppDatabaseProcessor:
     def __init__(self):
         """Initialize the processor with database and S3 connections."""
@@ -45,9 +50,11 @@ class WhatsAppDatabaseProcessor:
 
         # Initialize database services
         self.facilitator_service = FacilitatorService(self.db_manager)
+        self.child_service = ChildService(self.db_manager)
         self.report_service = ReportService(self.db_manager)
         self.image_service = ImageService(self.db_manager)
-        self.message_service = MessageService(self.db_manager)
+        self.message_service = MessageService(
+            self.db_manager, self.child_service)
         self.analysis_service = AnalysisService(self.db_manager)
 
         # S3 configuration
@@ -61,7 +68,7 @@ class WhatsAppDatabaseProcessor:
                 "AWS S3 configuration is incomplete. Check AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, and S3_BUCKET_NAME")
 
         # Initialize name anonymizer
-        self.name_anonymizer = NameAnonymizer()
+        self.name_anonymizer = NameAnonymizer(self.child_service)
 
         # Initialize S3 uploader
         self.s3_uploader = S3ImageUploader(
@@ -107,63 +114,107 @@ class WhatsAppDatabaseProcessor:
         """Get the learning centre ID for a facilitator from the junction table."""
         return self.facilitator_service.get_learning_centre_by_facilitator(facilitator_id)
 
-    def create_generated_report(self, facilitator_id: str, month: int, year: int,
-                                images_count: int, messages_count: int) -> str:
+    def create_generated_report(self, facilitator_id: str, learning_centre_id: str,
+                                month: int, year: int) -> str:
         """Create a new generated report and return its ID."""
-        # Get learning centre from facilitator relationship
-        learning_centre_id = self.get_facilitator_learning_centre(
-            facilitator_id)
-
-        if not learning_centre_id:
-            # Fallback to default centre if no relationship exists
-            learning_centre_id = self.get_or_create_default_centre()
-            print(
-                f"   ⚠️  No learning centre found for facilitator, using default centre")
-
         return self.report_service.create_report(
             facilitator_id, learning_centre_id, month, year,
-            images_count, messages_count, has_llm_analysis=False
+            has_llm_analysis=False
         )
 
-    def get_or_create_default_centre(self) -> str:
-        """Get or create a default learning centre for reports."""
-        return self.facilitator_service.create_learning_centre_if_needed("SAKHI VK Default Centre")
-
     def process_text_messages(self, safe_messages: List[Dict], filtered_messages: List[Dict],
-                              report_id: str, facilitator_id: str) -> List[Dict]:
+                              facilitator_id: str, learning_centre_id: str) -> List[Dict]:
         """Process text messages, filter administrative messages, anonymize names, and store in database."""
         processed_messages = []
 
         # Use utility function to filter text messages
         text_messages = filter_text_messages(safe_messages, filtered_messages)
 
-        # Prepare batch data for database storage
+        # Snapshot existing children before any anonymization induces creations.
+        existing_children = self.child_service.get_children_for_learning_centre(learning_centre_id)
+        existing_child_ids: Set[str] = {child["id"] for child in existing_children}
+
+        # Prepare batch data for database storage (deferred until confirmation)
         message_batch = []
+        message_children: List[List[Dict[str, str]]] = []
 
         for msg in text_messages:
             message_text = msg['message'].strip()
 
             # Anonymize children's names in the message
-            anonymized_text = self.name_anonymizer.anonymize_text(
-                message_text, facilitator_id)
+            anonymization_result = self.name_anonymizer.anonymize_text(
+                message_text, facilitator_id, learning_centre_id)
 
             # Add to batch for database storage
             message_batch.append({
-                'report_id': report_id,
-                'text': anonymized_text,
+                'facilitator_id': facilitator_id,
+                'learning_centre_id': learning_centre_id,
+                'text': anonymization_result.text,
                 'sent_at': msg['timestamp']
             })
+            message_children.append(anonymization_result.children)
 
             processed_messages.append({
-                'text': anonymized_text,
-                'timestamp': msg['timestamp']
+                'text': anonymization_result.text,
+                'timestamp': msg['timestamp'],
+                'children': anonymization_result.children
             })
+
+        if not message_batch:
+            return processed_messages
+
+        # Determine which child records were created during anonymization.
+        updated_children = self.child_service.get_children_for_learning_centre(learning_centre_id)
+        updated_children_lookup = {child["id"]: child for child in updated_children}
+        new_child_ids = {child_id for child_id in updated_children_lookup if child_id not in existing_child_ids}
+
+        if new_child_ids:
+            print("   🧒 Newly created child records detected during anonymization:")
+            for child_id in new_child_ids:
+                child_info = updated_children_lookup[child_id]
+                alias_preview = ", ".join(child_info.get("alias") or []) or "no aliases"
+                source_entry = next(
+                    (
+                        child
+                        for payload in message_children
+                        for child in payload
+                        if child.get("id") == child_id
+                    ),
+                    None,
+                )
+                original_name = source_entry.get("name") if source_entry else child_info.get("name")
+                alias_name = source_entry.get("alias") if source_entry else alias_preview
+                print(
+                    f"      • {original_name or 'Unknown name'} -> alias '{alias_name}' "
+                    f"(child_id={child_id})"
+                )
+        else:
+            print("   ℹ️  No new child records created during anonymization.")
+
+        try:
+            confirmation = input("   ❓ Continue storing anonymized messages and links? [y/N]: ").strip().lower()
+        except EOFError:
+            confirmation = ""
+
+        if confirmation not in ("y", "yes"):
+            if new_child_ids:
+                print("   🧹 Removing newly created child records...")
+                self.child_service.delete_children_by_ids(list(new_child_ids))
+            print("   ⏹️  Operation cancelled by user after anonymization review.")
+            raise UserAbortError("User aborted after reviewing anonymized names.")
 
         # Store messages in batch
         if message_batch:
-            stored_count = self.message_service.store_messages_batch(
+            field_note_ids = self.message_service.store_messages_batch(
                 message_batch)
-            print(f"   💬 Processed {stored_count} text messages (anonymized)")
+            print(
+                f"   💬 Processed {len(field_note_ids)} text messages (anonymized)")
+
+            # Link children to the newly created field notes
+            for field_note_id, children in zip(field_note_ids, message_children):
+                for child in children:
+                    self.child_service.link_child_to_field_note(
+                        child['id'], field_note_id)
 
         return processed_messages
 
@@ -234,6 +285,17 @@ class WhatsAppDatabaseProcessor:
                     })
                     continue
 
+                learning_centre_id = self.get_facilitator_learning_centre(
+                    facilitator_id)
+                if not learning_centre_id:
+                    print(
+                        f"   ⚠️  No learning centre linked to facilitator {facilitator_id}, skipping...")
+                    results['skipped_reports'].append({
+                        'sender': sender_name,
+                        'reason': 'No linked learning centre'
+                    })
+                    continue
+
                 # Step 5: Run face detection filter
                 print("   🔍 Running face detection filter...")
 
@@ -257,7 +319,8 @@ class WhatsAppDatabaseProcessor:
                 # Step 6: Process images first to get accurate count
                 print("   📸 Processing images...")
                 safe_images = self.image_processor.process_images(
-                    safe_messages, media_dir, sender_name, month, year, facilitator_id
+                    safe_messages, media_dir, sender_name, month, year,
+                    facilitator_id, learning_centre_id
                 )
                 actual_images_count = len(safe_images)
 
@@ -273,7 +336,7 @@ class WhatsAppDatabaseProcessor:
                 print(
                     f"      📊 Final counts - Images: {actual_images_count}, Messages: {actual_messages_count}")
                 report_id = self.create_generated_report(
-                    facilitator_id, month, year, actual_images_count, actual_messages_count
+                    facilitator_id, learning_centre_id, month, year
                 )
 
                 # Step 9: Store images in database
@@ -281,7 +344,8 @@ class WhatsAppDatabaseProcessor:
                     image_batch = []
                     for img in safe_images:
                         image_batch.append({
-                            'report_id': report_id,
+                            'facilitator_id': facilitator_id,
+                            'learning_centre_id': learning_centre_id,
                             'photo_url': img['photo_url'],
                             'caption': img['caption'],
                             'sent_at': img['sent_at']
@@ -293,9 +357,28 @@ class WhatsAppDatabaseProcessor:
 
                 # Step 10: Process and store text messages
                 print("   💬 Processing and storing text messages...")
-                text_messages = self.process_text_messages(
-                    safe_messages, filtered_messages, report_id, facilitator_id
-                )
+                try:
+                    text_messages = self.process_text_messages(
+                        safe_messages, filtered_messages, facilitator_id, learning_centre_id
+                    )
+                except UserAbortError as abort_exc:
+                    print(f"   ⏹️  {abort_exc}")
+                    if safe_images:
+                        removed = self.image_service.delete_images_by_report(report_id)
+                        if removed:
+                            print(f"   🧹 Removed {removed} images linked to the aborted report.")
+                    self.report_service.delete_report(report_id)
+                    results['skipped_reports'].append({
+                        'sender': sender_name,
+                        'reason': 'User aborted after anonymization review'
+                    })
+                    continue
+
+                mentioned_child_ids = {
+                    child['id']
+                    for entry in text_messages
+                    for child in entry.get('children', [])
+                }
 
                 # Step 11: Check if LLM analysis is viable and generate if so
                 print("   🤖 Checking if LLM analysis is viable...")
@@ -326,9 +409,11 @@ class WhatsAppDatabaseProcessor:
                 results['processed_reports'].append({
                     'sender': sender_name,
                     'facilitator_id': facilitator_id,
+                    'learning_centre_id': learning_centre_id,
                     'report_id': report_id,
                     'images_count': len(safe_images),
                     'messages_count': len(text_messages),
+                    'children_count': len(mentioned_child_ids),
                     'has_llm_analysis': llm_analysis is not None
                 })
 

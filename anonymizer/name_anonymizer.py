@@ -1,63 +1,51 @@
 """
-Name Anonymizer for Educational Field Reports
-Handles detection and anonymization of children's names using AI
+Name Anonymizer for Educational Field Reports.
+
+Stores and retrieves child information from the database so anonymized names are
+consistent across reports.
 """
 
+from __future__ import annotations
+
 import json
-import os
 import re
-from typing import Dict, Optional
-from openai import OpenAI
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, TYPE_CHECKING
+
+try:
+    from openai import OpenAI  # type: ignore
+except ImportError:
+    OpenAI = None
 
 from anonymizer.constants import (
+    OPENAI_MAX_COMPLETION_TOKENS,
     OPENAI_MODEL,
     OPENAI_TEMPERATURE,
-    OPENAI_MAX_COMPLETION_TOKENS,
     OPENAI_TIMEOUT,
-    NAME_MAPPING_FILE
 )
 from anonymizer.prompts import get_name_detection_prompt
+
+if TYPE_CHECKING:
+    from database.child_service import ChildService
+
+
+@dataclass
+class AnonymizedSegment:
+    """Result container for anonymized text."""
+
+    text: str
+    children: List[Dict[str, str]] = field(default_factory=list)
 
 
 class NameAnonymizer:
     """
-    Handles anonymization of children's names in educational content
+    Handles anonymization of children's names in educational content using the database.
     """
 
-    def __init__(self, mapping_file_path: Optional[str] = None):
-        """
-        Initialize the name anonymizer
-
-        Args:
-            mapping_file_path: Custom path for the mapping file. If None, uses default.
-        """
-        self.name_mapping_file = mapping_file_path or NAME_MAPPING_FILE
-        self.name_mappings = self.load_name_mappings()
-
-        print(f"Loaded {len(self.name_mappings)} existing name mappings")
-
-    def load_name_mappings(self) -> Dict[str, Dict[str, str]]:
-        """Load existing name mappings from JSON file"""
-        if os.path.exists(self.name_mapping_file):
-            try:
-                with open(self.name_mapping_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                print(f"Warning: Could not load mappings from {self.name_mapping_file}")
-                return {}
-        return {}
-
-    def save_name_mappings(self):
-        """Save current name mappings to JSON file"""
-        try:
-            with open(self.name_mapping_file, 'w', encoding='utf-8') as f:
-                json.dump(self.name_mappings, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"Warning: Could not save mappings to {self.name_mapping_file}: {e}")
-
-    def get_facilitator_mapping_key(self, facilitator_id: str) -> str:
-        """Generate a mapping key for a facilitator"""
-        return f"facilitator_{facilitator_id}"
+    def __init__(self, child_service: "ChildService"):
+        if child_service is None:
+            raise ValueError("ChildService instance is required for NameAnonymizer.")
+        self.child_service = child_service
 
     def generate_alternate_names(self, text: str, facilitator_id: str) -> Dict[str, str]:
         """
@@ -71,6 +59,10 @@ class NameAnonymizer:
             Dictionary mapping original names to alternate names
         """
         if not text or not text.strip():
+            return {}
+
+        if OpenAI is None:
+            print("Warning: openai package not available; skipping AI name detection.")
             return {}
 
         try:
@@ -120,103 +112,73 @@ class NameAnonymizer:
             print(f"Error generating alternate names: {e}")
             return {}
 
-    def anonymize_text(self, text: str, facilitator_id: str) -> str:
+    def anonymize_text(
+        self,
+        text: str,
+        facilitator_id: str,
+        learning_centre_id: Optional[str],
+    ) -> AnonymizedSegment:
         """
         Anonymize children's names in text using AI-only detection and existing mappings
 
         Args:
             text: Text to anonymize
             facilitator_id: ID of the facilitator for mapping context
+            learning_centre_id: Learning centre scope for the child records
 
         Returns:
-            Text with names anonymized
+            AnonymizedSegment containing the anonymized text and referenced children
         """
         if not text or not text.strip():
-            return text
+            return AnonymizedSegment(text=text, children=[])
 
-        facilitator_key = self.get_facilitator_mapping_key(facilitator_id)
-
-        # Get existing mappings for this facilitator
-        facilitator_mappings = self.name_mappings.get(facilitator_key, {})
-
-        # Start with the original text
         anonymized_text = text
+        referenced_children: Dict[str, Dict[str, str]] = {}
 
-        # Step 1: Apply existing known mappings
-        names_already_anonymized = []
-        for original_name, alternate_name in facilitator_mappings.items():
-            # Use word boundaries to match whole names only
-            pattern = r'\b' + re.escape(original_name) + r'\b'
+        # Step 1: Apply existing mappings from the database.
+        if learning_centre_id:
+            existing_children = self.child_service.get_children_for_learning_centre(learning_centre_id)
+            for child in existing_children:
+                aliases = child.get("alias") or []
+                if not aliases:
+                    continue
+                preferred_alias = aliases[0]
+                original_name = child["name"]
+                pattern = r"\b" + re.escape(original_name) + r"\b"
+                if re.search(pattern, anonymized_text, re.IGNORECASE):
+                    anonymized_text = re.sub(
+                        pattern, preferred_alias, anonymized_text, flags=re.IGNORECASE
+                    )
+                    referenced_children[child["id"]] = {
+                        "id": child["id"],
+                        "name": original_name,
+                        "alias": preferred_alias,
+                    }
+
+        # Step 2: Detect any additional names via AI and persist them.
+        new_mappings = self.generate_alternate_names(text, facilitator_id)
+        for original_name, alternate_name in new_mappings.items():
+            child_id: Optional[str] = None
+            preferred_alias = alternate_name
+            if learning_centre_id:
+                child_record = self.child_service.ensure_child_with_alias(
+                    learning_centre_id, original_name, alternate_name
+                )
+                child_id = child_record["id"]
+                preferred_alias = child_record["alias"]
+            pattern = r"\b" + re.escape(original_name) + r"\b"
             if re.search(pattern, anonymized_text, re.IGNORECASE):
                 anonymized_text = re.sub(
-                    pattern, alternate_name, anonymized_text, flags=re.IGNORECASE)
-                names_already_anonymized.append(original_name)
+                    pattern, preferred_alias, anonymized_text, flags=re.IGNORECASE
+                )
 
-        # Step 2: Use AI to detect ALL names in the message (both new and existing)
-        # This ensures we catch names we might have missed before
-        new_mappings = self.generate_alternate_names(text, facilitator_id)
+            referenced_children[child_id or original_name] = {
+                "id": child_id,
+                "name": original_name,
+                "alias": preferred_alias,
+            }
 
-        if new_mappings:
-            # Add new mappings to facilitator's mappings
-            if facilitator_key not in self.name_mappings:
-                self.name_mappings[facilitator_key] = {}
-
-            new_names_found = []
-            for original_name, alternate_name in new_mappings.items():
-                # Check if this is a truly new name (not already in our mappings)
-                if original_name not in facilitator_mappings:
-                    self.name_mappings[facilitator_key][original_name] = alternate_name
-                    new_names_found.append(original_name)
-
-                # Apply anonymization (whether new or existing)
-                pattern = r'\b' + re.escape(original_name) + r'\b'
-                anonymized_text = re.sub(
-                    pattern, alternate_name, anonymized_text, flags=re.IGNORECASE)
-
-            # Save updated mappings if we found new names
-            if new_names_found:
-                self.save_name_mappings()
-                print(f"   🔄 Added {len(new_names_found)} new name mappings for facilitator {facilitator_id}")
-
-        return anonymized_text
-
-    def get_mappings_for_facilitator(self, facilitator_id: str) -> Dict[str, str]:
-        """
-        Get all name mappings for a specific facilitator
-
-        Args:
-            facilitator_id: ID of the facilitator
-
-        Returns:
-            Dictionary of name mappings for this facilitator
-        """
-        facilitator_key = self.get_facilitator_mapping_key(facilitator_id)
-        return self.name_mappings.get(facilitator_key, {})
-
-    def get_all_mappings(self) -> Dict[str, Dict[str, str]]:
-        """
-        Get all name mappings
-
-        Returns:
-            Complete mapping dictionary organized by facilitator
-        """
-        return self.name_mappings.copy()
-
-    def clear_mappings(self, facilitator_id: Optional[str] = None):
-        """
-        Clear name mappings
-
-        Args:
-            facilitator_id: If provided, clear only mappings for this facilitator.
-                          If None, clear all mappings.
-        """
-        if facilitator_id:
-            facilitator_key = self.get_facilitator_mapping_key(facilitator_id)
-            if facilitator_key in self.name_mappings:
-                del self.name_mappings[facilitator_key]
-                print(f"Cleared mappings for facilitator {facilitator_id}")
-        else:
-            self.name_mappings.clear()
-            print("Cleared all name mappings")
-
-        self.save_name_mappings()
+        return AnonymizedSegment(
+            text=anonymized_text,
+            children=list(referenced_children.values()),
+        )

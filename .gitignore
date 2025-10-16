@@ -129,7 +129,9 @@ dmypy.json
 
 # Data files
 whatsapp_data_*/
+coordinator_field_notes/
 *.json
+schema_dump*.txt
 !env.example
 
 # OS files

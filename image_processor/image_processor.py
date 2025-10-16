@@ -45,7 +45,7 @@ class ImageProcessor:
 
     def process_images(self, safe_messages: List[Dict], media_dir: str,
                        facilitator_name: str, month: int, year: int,
-                       facilitator_id: str) -> List[Dict]:
+                       facilitator_id: str, learning_centre_id: Optional[str]) -> List[Dict]:
         """
         Process safe images, upload to S3, and anonymize captions
         NO database operations - returns data for storage elsewhere
@@ -57,6 +57,7 @@ class ImageProcessor:
             month: Month of the report
             year: Year of the report
             facilitator_id: ID of the facilitator
+            learning_centre_id: ID of the linked learning centre for anonymization context
 
         Returns:
             List of processed image dictionaries ready for database storage
@@ -82,8 +83,12 @@ class ImageProcessor:
                         if photo_url:
                             # Anonymize caption if it exists
                             original_caption = msg.get('message', '')
-                            anonymized_caption = self.name_anonymizer.anonymize_text(
-                                original_caption, facilitator_id) if original_caption else ''
+                            anonymized_caption = ''
+                            if original_caption:
+                                caption_result = self.name_anonymizer.anonymize_text(
+                                    original_caption, facilitator_id, learning_centre_id
+                                )
+                                anonymized_caption = caption_result.text
 
                             processed_images.append({
                                 'filename': filename,

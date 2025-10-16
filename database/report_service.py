@@ -16,8 +16,7 @@ class ReportService:
         self.db_manager = db_manager
 
     def create_report(self, facilitator_id: str, learning_centre_id: str,
-                     month: int, year: int, images_count: int,
-                     messages_count: int, has_llm_analysis: bool = False) -> str:
+                      month: int, year: int, has_llm_analysis: bool = False) -> str:
         """
         Create a new report record in database
 
@@ -26,8 +25,6 @@ class ReportService:
             learning_centre_id: UUID of learning centre
             month: Report month
             year: Report year
-            images_count: Number of images
-            messages_count: Number of messages
             has_llm_analysis: Whether report has LLM analysis
 
         Returns:
@@ -38,11 +35,11 @@ class ReportService:
                 cur.execute(
                     """
                     INSERT INTO generated_reports
-                    (facilitator_id, learning_centre_id, month, year, images_count, messages_count, has_llm_analysis)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    (facilitator_id, learning_centre_id, month, year, has_llm_analysis)
+                    VALUES (%s, %s, %s, %s, %s)
                     RETURNING id
                     """,
-                    (facilitator_id, learning_centre_id, month, year, images_count, messages_count, has_llm_analysis)
+                    (facilitator_id, learning_centre_id, month, year, has_llm_analysis)
                 )
                 report_id = cur.fetchone()[0]
                 conn.commit()
@@ -64,21 +61,7 @@ class ReportService:
                 )
                 conn.commit()
 
-    def get_report_by_id(self, report_id: str) -> Optional[Dict[str, Any]]:
-        """
-        Get report by ID
-
-        Args:
-            report_id: Report UUID
-
-        Returns:
-            Report data or None
-        """
-        query = "SELECT * FROM generated_reports WHERE id = %s"
-        result = self.db_manager.execute_query(query, (report_id,))
-        return dict(result[0]) if result else None
-
-    def get_reports_by_facilitator(self, facilitator_id: str) -> list:
+    def get_reports_by_facilitator(self, facilitator_id: str) -> List[Dict[str, Any]]:
         """
         Get all reports for a facilitator
 
@@ -89,25 +72,51 @@ class ReportService:
             List of report records
         """
         query = """
-            SELECT * FROM generated_reports
+            SELECT id, facilitator_id, learning_centre_id, month, year,
+                   has_llm_analysis, created_at, updated_at
+            FROM generated_reports
             WHERE facilitator_id = %s
             ORDER BY year DESC, month DESC
         """
-        return self.db_manager.execute_query(query, (facilitator_id,))
+        rows = self.db_manager.execute_query(query, (facilitator_id,))
+        return [
+            {
+                'id': row[0],
+                'facilitator_id': row[1],
+                'learning_centre_id': row[2],
+                'month': row[3],
+                'year': row[4],
+                'has_llm_analysis': row[5],
+                'created_at': row[6],
+                'updated_at': row[7]
+            }
+            for row in rows
+        ] if rows else []
 
-    def get_report_by_id(self, report_id: str) -> Optional[tuple]:
+    def get_report_by_id(self, report_id: str) -> Optional[Dict[str, Any]]:
         """
-        Get a single report by ID
-
-        Args:
-            report_id: Report UUID
-
-        Returns:
-            Report tuple or None
+        Get a single report by ID.
         """
-        query = "SELECT * FROM generated_reports WHERE id = %s"
+        query = """
+            SELECT id, facilitator_id, learning_centre_id, month, year,
+                   has_llm_analysis, created_at, updated_at
+            FROM generated_reports
+            WHERE id = %s
+        """
         results = self.db_manager.execute_query(query, (report_id,))
-        return results[0] if results else None
+        if not results:
+            return None
+        row = results[0]
+        return {
+            'id': row[0],
+            'facilitator_id': row[1],
+            'learning_centre_id': row[2],
+            'month': row[3],
+            'year': row[4],
+            'has_llm_analysis': row[5],
+            'created_at': row[6],
+            'updated_at': row[7]
+        }
 
     def get_existing_report(self, facilitator_id: str, month: int, year: int) -> Optional[str]:
         """
@@ -143,8 +152,6 @@ class ReportService:
                 with conn.cursor() as cur:
                     # Delete in order of dependencies
                     cur.execute("DELETE FROM generated_report_llm_analysis WHERE generated_report_id = %s", (report_id,))
-                    cur.execute("DELETE FROM generated_report_images WHERE generated_report_id = %s", (report_id,))
-                    cur.execute("DELETE FROM generated_report_messages WHERE generated_report_id = %s", (report_id,))
                     cur.execute("DELETE FROM generated_reports WHERE id = %s", (report_id,))
                     conn.commit()
                     return True

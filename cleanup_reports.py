@@ -12,6 +12,7 @@ from typing import Optional, List
 from dotenv import load_dotenv
 from database.connection import DatabaseManager
 from database.report_service import ReportService
+from database.child_service import ChildService
 from database.image_service import ImageService
 from database.message_service import MessageService
 from database.analysis_service import AnalysisService
@@ -31,8 +32,9 @@ class ReportCleanup:
         # Initialize database manager and services
         self.db_manager = DatabaseManager()
         self.report_service = ReportService(self.db_manager)
+        self.child_service = ChildService(self.db_manager)
         self.image_service = ImageService(self.db_manager)
-        self.message_service = MessageService(self.db_manager)
+        self.message_service = MessageService(self.db_manager, self.child_service)
         self.analysis_service = AnalysisService(self.db_manager)
 
         self.delete_s3 = delete_s3
@@ -69,6 +71,8 @@ class ReportCleanup:
         # Count reports
         counts['reports'] = self.report_service.count_reports_by_date(month, year)
 
+        field_note_ids: List[str] = []
+
         if counts['reports'] > 0:
             # Get report IDs for counting related records
             report_ids = self.report_service.get_report_ids_by_date(month, year)
@@ -77,10 +81,16 @@ class ReportCleanup:
             counts['images'] = self.image_service.count_images_by_report_ids(report_ids)
             counts['messages'] = self.message_service.count_messages_by_report_ids(report_ids)
             counts['llm_analyses'] = self.analysis_service.count_analyses_by_report_ids(report_ids)
+
+            field_note_ids = self.message_service.get_field_note_ids_for_reports(report_ids)
+            counts['child_links'] = self.child_service.count_links_by_field_note_ids(field_note_ids)
+            counts['unique_children'] = len(self.child_service.get_child_ids_by_field_note_ids(field_note_ids))
         else:
             counts['images'] = 0
             counts['messages'] = 0
             counts['llm_analyses'] = 0
+            counts['child_links'] = 0
+            counts['unique_children'] = 0
 
         return counts
 
@@ -131,7 +141,12 @@ class ReportCleanup:
 
         return deleted_count
 
-    def delete_database_records(self, month: Optional[int] = None, year: Optional[int] = None):
+    def delete_database_records(
+        self,
+        month: Optional[int] = None,
+        year: Optional[int] = None,
+        delete_children: bool = False
+    ):
         """Delete records from database tables (in correct order)."""
         # Get report IDs to delete
         report_ids = self.report_service.get_report_ids_by_date(month, year)
@@ -141,8 +156,14 @@ class ReportCleanup:
                 'reports': 0,
                 'images': 0,
                 'messages': 0,
-                'llm_analyses': 0
+                'llm_analyses': 0,
+                'children': 0
             }
+
+        field_note_ids = self.message_service.get_field_note_ids_for_reports(report_ids)
+        child_ids_to_delete: List[str] = []
+        if delete_children and field_note_ids:
+            child_ids_to_delete = self.child_service.get_child_ids_by_field_note_ids(field_note_ids)
 
         # Delete in order of foreign key dependencies using services
         print("   Deleting LLM analyses...")
@@ -157,11 +178,17 @@ class ReportCleanup:
         print("   Deleting generated reports...")
         reports_deleted = self.report_service.delete_reports_by_date(month, year)
 
+        children_deleted = 0
+        if delete_children and child_ids_to_delete:
+            print("   Deleting child records...")
+            children_deleted = self.child_service.delete_children_by_ids(child_ids_to_delete)
+
         return {
             'reports': reports_deleted,
             'images': images_deleted,
             'messages': messages_deleted,
-            'llm_analyses': llm_deleted
+            'llm_analyses': llm_deleted,
+            'children': children_deleted
         }
 
     def clear_name_mappings(self):
@@ -191,7 +218,13 @@ class ReportCleanup:
             print("   No name mappings file found")
             return False
 
-    def cleanup(self, clear_name_mappings: bool = True, month: Optional[int] = None, year: Optional[int] = None):
+    def cleanup(
+        self,
+        clear_name_mappings: bool = True,
+        month: Optional[int] = None,
+        year: Optional[int] = None,
+        delete_children: bool = False
+    ):
         """
         Perform the full cleanup operation.
 
@@ -199,6 +232,7 @@ class ReportCleanup:
             clear_name_mappings (bool): If True, also clear the name anonymization mappings
             month (int, optional): Only delete reports from this month (requires year)
             year (int, optional): Only delete reports from this year
+            delete_children (bool): If True, also delete child records referenced by the selected notes
         """
         print("\n" + "=" * 70)
         print("🧹 REPORT CLEANUP TOOL")
@@ -220,6 +254,11 @@ class ReportCleanup:
         print(f"   Images: {counts['images']}")
         print(f"   Messages: {counts['messages']}")
         print(f"   LLM Analyses: {counts['llm_analyses']}")
+        print(f"   Child ↔ Note links: {counts['child_links']}")
+        if delete_children:
+            print(f"   Children (unique): {counts['unique_children']}")
+        else:
+            print(f"   Children (unique): {counts['unique_children']} (will remain)")
 
         if counts['reports'] == 0:
             if month is not None and year is not None:
@@ -248,6 +287,8 @@ class ReportCleanup:
             print(f"   • {len(s3_urls)} actual image files from S3 storage")
         if clear_name_mappings:
             print(f"   • All name anonymization mappings (with backup)")
+        if delete_children and counts['unique_children'] > 0:
+            print(f"   • {counts['unique_children']} child records from the database")
 
         confirmation = input("\nType 'DELETE' to confirm: ")
 
@@ -265,12 +306,17 @@ class ReportCleanup:
 
         # Delete from database
         print("\n🗄️  Deleting records from database...")
-        deleted = self.delete_database_records(month, year)
+        deleted = self.delete_database_records(month, year, delete_children=delete_children)
 
         print(f"\n   ✅ Deleted {deleted['reports']} reports")
         print(f"   ✅ Deleted {deleted['images']} image records")
         print(f"   ✅ Deleted {deleted['messages']} message records")
         print(f"   ✅ Deleted {deleted['llm_analyses']} LLM analyses")
+        if delete_children:
+            print(f"   ✅ Deleted {deleted['children']} child records")
+        else:
+            if counts['unique_children'] > 0:
+                print("   ℹ️  Child records were retained (links removed with field notes)")
 
         # Clear name mappings if requested
         if clear_name_mappings:
@@ -308,6 +354,9 @@ Examples:
   # Delete everything except name mappings:
   python cleanup_reports.py --delete-s3 --keep-name-mappings
 
+  # Delete reports and associated child records:
+  python cleanup_reports.py --delete-children
+
 Note: S3 deletion is disabled by default to prevent accidental data loss.
       Enable with --delete-s3 flag only if you're sure.
         """
@@ -323,6 +372,12 @@ Note: S3 deletion is disabled by default to prevent accidental data loss.
         '--keep-name-mappings',
         action='store_true',
         help='Keep the name anonymization mappings (do not clear)'
+    )
+
+    parser.add_argument(
+        '--delete-children',
+        action='store_true',
+        help='Also delete child records referenced by the selected field notes (default: keep children)'
     )
 
     parser.add_argument(
@@ -349,7 +404,8 @@ Note: S3 deletion is disabled by default to prevent accidental data loss.
         cleanup.cleanup(
             clear_name_mappings=not args.keep_name_mappings,
             month=args.month,
-            year=args.year
+            year=args.year,
+            delete_children=args.delete_children
         )
     except KeyboardInterrupt:
         print("\n\n❌ Cleanup interrupted by user")
