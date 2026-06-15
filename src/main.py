@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import zipfile
 from datetime import datetime
@@ -17,18 +16,12 @@ from src.db.facilitators import FacilitatorLookup, ResolvedFacilitator
 from src.db.field_images import insert_batch as insert_images
 from src.db.field_notes import insert_batch as insert_notes
 from src.models import ParsedMessage, ProcessedImage, ProcessedNote
-from src.parser.grouper import group_by_sender
 from src.parser.whatsapp import filter_by_date_range, parse_chat_file
+from src.pipeline import RunSummary, process_messages
 from src.privacy.face_detector import is_image_safe
 from src.storage.s3 import S3Uploader
 
 logger = logging.getLogger(__name__)
-
-MIN_MESSAGE_LENGTH = 3
-
-SKIP_TEXTS = {"media omitted", "<media omitted>", "\u200emedia omitted"}
-
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
 
 
 def _find_chat_file(input_path: Path) -> tuple[Path, Path]:
@@ -48,24 +41,6 @@ def _find_chat_file(input_path: Path) -> tuple[Path, Path]:
         sys.exit(1)
 
     return txt_files[0], media_dir
-
-
-def _split_messages(
-    messages: list[ParsedMessage],
-) -> tuple[list[ParsedMessage], list[ParsedMessage]]:
-    text_msgs = []
-    image_msgs = []
-    for m in messages:
-        if m.has_attachment and m.attachment_filename:
-            ext = Path(m.attachment_filename).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
-                image_msgs.append(m)
-                if m.text and len(m.text) >= MIN_MESSAGE_LENGTH and m.text.strip().lower() not in SKIP_TEXTS:
-                    text_msgs.append(m)
-                continue
-        if m.text and len(m.text) >= MIN_MESSAGE_LENGTH and m.text.strip().lower() not in SKIP_TEXTS:
-            text_msgs.append(m)
-    return text_msgs, image_msgs
 
 
 def _process_images(
@@ -147,7 +122,7 @@ def _process_text(
     return notes, errors
 
 
-def run(args: argparse.Namespace) -> None:
+def run(args: argparse.Namespace) -> RunSummary:
     settings = Settings.from_env()
 
     logging.basicConfig(
@@ -169,15 +144,12 @@ def run(args: argparse.Namespace) -> None:
         messages = filter_by_date_range(messages, date_from, date_to)
         logger.info("After date filter: %d messages", len(messages))
 
-    sender_groups = group_by_sender(messages)
-    logger.info("Senders: %d", len(sender_groups))
-
     if args.sender:
-        sender_groups = {k: v for k, v in sender_groups.items() if args.sender.lower() in k.lower()}
-        if not sender_groups:
+        messages = [m for m in messages if args.sender.lower() in m.sender.lower()]
+        if not messages:
             print(f"No sender matching '{args.sender}' found")
-            return
-        logger.info("Filtered to %d sender(s) matching '%s'", len(sender_groups), args.sender)
+            return RunSummary()
+        logger.info("Filtered to %d message(s) from sender matching '%s'", len(messages), args.sender)
 
     supabase = create_supabase_client(settings.supabase_url, settings.supabase_secret_key)
     lookup = FacilitatorLookup(supabase)
@@ -191,85 +163,42 @@ def run(args: argparse.Namespace) -> None:
 
     openai_client = None if args.skip_ai else OpenAI(api_key=settings.openai_api_key)
 
-    summary: dict[str, dict] = {}
-    all_errors: list[str] = []
-
-    for sender, sender_msgs in sender_groups.items():
-        resolved = lookup.resolve(sender)
-        if not resolved:
-            logger.warning("Unmatched sender: %s (%d messages)", sender, len(sender_msgs))
-            all_errors.append(f"Unmatched sender: {sender}")
-            continue
-
-        text_msgs, image_msgs = _split_messages(sender_msgs)
-        sender_result = {
-            "facilitator": resolved.name,
-            "total": len(sender_msgs),
-            "images_stored": 0,
-            "notes_stored": 0,
-            "notes_visible": 0,
-            "notes_hidden": 0,
-            "errors": [],
-        }
-
+    def _images(msgs, resolved):
         if args.dry_run:
-            sender_result["images_found"] = len(image_msgs)
-            sender_result["text_found"] = len(text_msgs)
-            print(f"[DRY RUN] {sender} -> {resolved.name} | "
-                  f"text={len(text_msgs)} images={len(image_msgs)}")
-            summary[sender] = sender_result
-            continue
+            return len(msgs), []
+        images, errs = _process_images(msgs, media_dir, uploader, resolved)
+        return insert_images(supabase, images), errs
 
-        if not args.skip_images:
-            images, img_errors = _process_images(image_msgs, media_dir, uploader, resolved)
-            sender_result["errors"].extend(img_errors)
-            all_errors.extend(img_errors)
+    def _text(msgs, resolved):
+        if args.dry_run:
+            return []
+        return _process_text(msgs, resolved, openai_client, settings if openai_client else None)[0]
 
-            stored = insert_images(supabase, images)
-            sender_result["images_stored"] = stored
+    def _insert(notes):
+        if args.dry_run:
+            return 0
+        return insert_notes(supabase, notes)
 
-        notes, text_errors = _process_text(
-            text_msgs, resolved,
-            openai_client, settings if openai_client else None,
-        )
-        sender_result["errors"].extend(text_errors)
-        all_errors.extend(text_errors)
-
-        stored = insert_notes(supabase, notes)
-        sender_result["notes_stored"] = stored
-        sender_result["notes_visible"] = sum(1 for n in notes if n.is_visible)
-        sender_result["notes_hidden"] = sum(1 for n in notes if not n.is_visible)
-
-        logger.info(
-            "%s: %d notes (%d visible, %d hidden), %d images",
-            resolved.name,
-            sender_result["notes_stored"],
-            sender_result["notes_visible"],
-            sender_result["notes_hidden"],
-            sender_result["images_stored"],
-        )
-
-        summary[sender] = sender_result
+    summary = process_messages(
+        messages,
+        lookup=lookup,
+        process_images=_images,
+        process_text=_text,
+        insert_notes=_insert,
+        skip_images=args.skip_images,
+    )
 
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
-    for sender, result in summary.items():
-        status = "[DRY RUN] " if args.dry_run else ""
-        print(f"\n{status}{sender} -> {result['facilitator']}")
-        if args.dry_run:
-            print(f"  Text messages: {result.get('text_found', 0)}")
-            print(f"  Image messages: {result.get('images_found', 0)}")
-        else:
-            print(f"  Notes stored: {result['notes_stored']} "
-                  f"(visible={result['notes_visible']}, hidden={result['notes_hidden']})")
-            print(f"  Images stored: {result['images_stored']}")
-        if result.get("errors"):
-            for err in result["errors"]:
-                print(f"  ERROR: {err}")
+    print(f"Notes stored: {summary.notes_stored}")
+    print(f"Images stored: {summary.images_stored}")
+    for sender in summary.unmatched_senders:
+        print(f"  UNMATCHED: {sender}")
+    for err in summary.errors:
+        print(f"  ERROR: {err}")
 
-    if all_errors:
-        print(f"\nTotal errors: {len(all_errors)}")
+    return summary
 
 
 def main() -> None:
