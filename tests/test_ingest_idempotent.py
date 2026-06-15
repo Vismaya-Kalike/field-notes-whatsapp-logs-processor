@@ -40,6 +40,30 @@ def test_second_run_ingests_nothing(tmp_path, monkeypatch):
     assert ingested == [2]  # first run processes 2, second processes 0 (no call)
 
 
+def test_dry_run_does_not_advance_watermark(tmp_path, monkeypatch):
+    from src.watermark import read_watermark
+
+    chat_dir = tmp_path / "Facilitators"
+    chat_dir.mkdir(parents=True, exist_ok=True)
+    (chat_dir / "_chat.txt").write_text(
+        "14/06/26, 09:30 - Ravi Kumar: hello team\n", encoding="utf-8"
+    )
+    outbox = tmp_path / "outbox"
+
+    class _Lookup:
+        def __init__(self, c): pass
+        def resolve(self, sender): return None  # unmatched -> no writes attempted
+
+    monkeypatch.setattr(ingest_live, "create_supabase_client", lambda *a, **k: object())
+    monkeypatch.setattr(ingest_live, "FacilitatorLookup", _Lookup)
+    monkeypatch.setattr(ingest_live.Settings, "from_env", classmethod(lambda cls: _settings()))
+
+    ingest_live.ingest_chat(chat_dir, outbox, skip_ai=True, dry_run=True)
+
+    assert read_watermark(chat_dir) is None          # watermark NOT advanced
+    assert not outbox.exists() or list(outbox.glob("*.json")) == []  # no alert queued
+
+
 def _settings():
     from src.config import Settings
     return Settings(

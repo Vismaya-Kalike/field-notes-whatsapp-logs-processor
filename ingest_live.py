@@ -45,7 +45,7 @@ def _find_chat_txt(chat_dir: Path) -> Path:
     return txt_files[0]
 
 
-def ingest_chat(chat_dir: Path, outbox_dir: Path, *, skip_ai: bool) -> None:
+def ingest_chat(chat_dir: Path, outbox_dir: Path, *, skip_ai: bool, dry_run: bool = False) -> None:
     settings = Settings.from_env()
     chat_file = _find_chat_txt(chat_dir)
 
@@ -61,6 +61,25 @@ def ingest_chat(chat_dir: Path, outbox_dir: Path, *, skip_ai: bool) -> None:
 
     supabase = create_supabase_client(settings.supabase_url, settings.supabase_secret_key)
     lookup = FacilitatorLookup(supabase)
+
+    if dry_run:
+        def _images(msgs, resolved):
+            return len(msgs), []
+
+        def _text(msgs, resolved):
+            return []
+
+        summary = process_messages(
+            new_messages, lookup=lookup,
+            process_images=_images, process_text=_text,
+            insert_notes=lambda notes: 0,
+        )
+        print(f"[DRY RUN] {chat_dir.name}: {len(new_messages)} new message(s); "
+              f"would process ~{summary.images_stored} image(s); "
+              f"unmatched senders: {summary.unmatched_senders or 'none'}")
+        print(f"[DRY RUN] watermark would advance to {max_timestamp(new_messages)} (not written)")
+        return
+
     uploader = S3Uploader(
         settings.aws_access_key_id, settings.aws_secret_access_key,
         settings.aws_region, settings.s3_bucket_name,
@@ -106,6 +125,7 @@ def main() -> None:
     parser.add_argument("--live-dir", default=os.getenv("LIVE_DIR", "data/live"))
     parser.add_argument("--outbox-dir", default=os.getenv("OUTBOX_DIR", "data/live/outbox"))
     parser.add_argument("--skip-ai", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     live_dir = Path(args.live_dir)
@@ -117,7 +137,7 @@ def main() -> None:
 
     for chat_dir in chat_dirs:
         try:
-            ingest_chat(chat_dir, outbox_dir, skip_ai=args.skip_ai)
+            ingest_chat(chat_dir, outbox_dir, skip_ai=args.skip_ai, dry_run=args.dry_run)
         except Exception:
             logger.exception("Ingest failed for %s (watermark not advanced)", chat_dir)
 
