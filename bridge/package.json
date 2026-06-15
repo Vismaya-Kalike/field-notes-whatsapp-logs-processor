@@ -6,7 +6,8 @@
   "packageManager": "pnpm@10.6.5",
   "scripts": {
     "start": "node src/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "list-chats": "node src/list-chats.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "6.7.23",
