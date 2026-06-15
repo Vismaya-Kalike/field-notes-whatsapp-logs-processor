@@ -1,0 +1,19 @@
+{
+  "name": "vika-whatsapp-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "nodemailer": "^6.9.0",
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "vitest": "^2.0.0"
+  }
+}
