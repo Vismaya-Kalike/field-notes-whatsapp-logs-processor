@@ -9,7 +9,13 @@
      `OUTBOX_DIR=/app/data/live/outbox`, `AUTH_DIR=/app/bridge/auth_info`,
      `BRIDGE_CONFIG=/app/bridge/config.json`,
      `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `SMTP_FROM`, `ALERT_EMAIL_TO`.
-   - `config.json`: commit a real one as a Railway file mount or bake via a config var.
+   - `config.json`: NOT committed (gitignored). At deploy, create it from
+     `bridge/config.example.json` with real group JIDs and mount it at the path in
+     `BRIDGE_CONFIG` (default `/app/bridge/config.json`). If absent, the bridge exits
+     at startup with a clear error naming the expected path.
+   - **Monitored chats must be WhatsApp groups** (`...@g.us`). Group messages always
+     carry a participant JID, which `jidToName` maps to a facilitator name. (1:1 DMs
+     are not supported by the JID-map design.)
 
 2. **ingest** (cron job)
    - Dockerfile: `Dockerfile.ingest`
@@ -39,3 +45,11 @@ If you get the logout email: open the bridge logs, a fresh QR will be printing
 Edit/delete `/app/data/live/<slug>/.watermark` on the volume, then trigger the
 ingest cron. Deleting it re-ingests the whole `_chat.txt` (will duplicate notes —
 only do this on a fresh chat or after clearing those notes).
+
+## Unmatched senders & the watermark
+The ingester advances the per-chat watermark to the newest message it saw, even if
+some senders were unmatched (not in the JID map). Those messages are NOT retried on
+the next run — instead you get a WhatsApp "note to self" listing the unmatched
+senders. Recovery: add them to `jidToName` (and the facilitator must exist in the DB),
+then they'll be ingested going forward. To re-ingest the missed window, see
+"Watermark reset" above.
