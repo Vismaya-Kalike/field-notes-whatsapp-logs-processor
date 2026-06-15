@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import stat
 import sys
 import zipfile
 from datetime import datetime
@@ -24,11 +26,24 @@ from src.storage.s3 import S3Uploader
 logger = logging.getLogger(__name__)
 
 
+def _safe_extract_zip(zip_path: Path, extract_dir: Path) -> None:
+    base = extract_dir.resolve()
+    base.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            target = (base / info.filename).resolve()
+            if not (target == base or str(target).startswith(str(base) + os.sep)):
+                raise RuntimeError(f"unsafe zip entry escapes extract dir: {info.filename}")
+            mode = info.external_attr >> 16
+            if stat.S_ISLNK(mode):
+                raise RuntimeError(f"symlink in zip not allowed: {info.filename}")
+            zf.extract(info, base)
+
+
 def _find_chat_file(input_path: Path) -> tuple[Path, Path]:
     if input_path.suffix == ".zip":
         extract_dir = input_path.parent / input_path.stem
-        with zipfile.ZipFile(input_path, "r") as zf:
-            zf.extractall(extract_dir)
+        _safe_extract_zip(input_path, extract_dir)
         media_dir = extract_dir
     elif input_path.is_dir():
         media_dir = input_path
