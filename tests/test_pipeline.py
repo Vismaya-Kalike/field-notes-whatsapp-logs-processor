@@ -64,3 +64,21 @@ def test_process_messages_stores_for_matched(sample_messages):
     assert summary.unmatched_senders == []
     assert summary.images_stored == 1
     assert summary.notes_stored == 1
+
+
+def test_split_messages_image_with_caption_yields_both():
+    from datetime import datetime
+
+    from src.models import ParsedMessage
+    from src.pipeline import split_messages
+
+    msg = ParsedMessage(
+        timestamp=datetime(2026, 6, 14, 9, 30),
+        sender="Ravi Kumar",
+        text="great work today",
+        has_attachment=True,
+        attachment_filename="IMG-20260614-WA0001.jpg",
+    )
+    text_msgs, image_msgs = split_messages([msg])
+    assert image_msgs == [msg]
+    assert text_msgs == [msg]

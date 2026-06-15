@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 from src.models import ParsedMessage
+from src.parser.grouper import group_by_sender
 
 MIN_MESSAGE_LENGTH = 3
 SKIP_TEXTS = {"media omitted", "<media omitted>", "‎media omitted"}
@@ -18,7 +19,7 @@ class _Resolved(Protocol):
 
 
 class _Lookup(Protocol):
-    def resolve(self, sender: str): ...
+    def resolve(self, sender: str) -> _Resolved | None: ...
 
 
 @dataclass
@@ -51,13 +52,11 @@ def process_messages(
     messages: list[ParsedMessage],
     *,
     lookup: _Lookup,
-    process_images: Callable[[list[ParsedMessage], object], tuple[int, list[str]]],
-    process_text: Callable[[list[ParsedMessage], object], list],
+    process_images: Callable[[list[ParsedMessage], _Resolved], tuple[int, list[str]]],
+    process_text: Callable[[list[ParsedMessage], _Resolved], list],
     insert_notes: Callable[[list], int],
     skip_images: bool = False,
 ) -> RunSummary:
-    from src.parser.grouper import group_by_sender
-
     summary = RunSummary()
     sender_groups = group_by_sender(messages)
 
