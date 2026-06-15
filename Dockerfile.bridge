@@ -1,0 +1,7 @@
+FROM node:20-slim
+WORKDIR /app/bridge
+RUN corepack enable
+COPY bridge/package.json bridge/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+COPY bridge/ ./
+CMD ["node", "src/index.js"]

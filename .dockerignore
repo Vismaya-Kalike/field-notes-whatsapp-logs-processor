@@ -1,0 +1,6 @@
+**/node_modules
+**/.venv
+**/auth_info
+whatsapp_data_*
+data/live
+*.zip
