@@ -10,16 +10,14 @@ WORKDIR /app
 
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
 ENV UV_FROZEN=1
+
 RUN uv python install 3.11
-
-COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev
-
-RUN corepack enable
-COPY bridge/package.json bridge/pnpm-lock.yaml ./bridge/
-RUN cd bridge && pnpm install --frozen-lockfile --prod
+RUN npm install -g pnpm@10.6.5
 
 COPY . .
+
+RUN uv sync --no-dev
+RUN cd bridge && pnpm install --frozen-lockfile --prod
 
 WORKDIR /app/bridge
 CMD ["node", "src/index.js"]
