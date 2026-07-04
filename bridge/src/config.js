@@ -8,14 +8,22 @@ const CONFIG_PATH = process.env.BRIDGE_CONFIG || path.resolve(process.cwd(), 'co
 
 export function loadConfig() {
   let raw;
-  try {
-    raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-  } catch (err) {
-    throw new Error(
-      `Failed to load bridge config at ${CONFIG_PATH} (set BRIDGE_CONFIG to override). ` +
-      `Copy bridge/config.example.json to that path and fill in real group JIDs. ` +
-      `Original error: ${err.message}`,
-    );
+  if (process.env.BRIDGE_CONFIG_JSON) {
+    try {
+      raw = JSON.parse(process.env.BRIDGE_CONFIG_JSON);
+    } catch (err) {
+      throw new Error(`Failed to parse BRIDGE_CONFIG_JSON: ${err.message}`);
+    }
+  } else {
+    try {
+      raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    } catch (err) {
+      throw new Error(
+        `Failed to load bridge config at ${CONFIG_PATH} (set BRIDGE_CONFIG to override, ` +
+        `or provide BRIDGE_CONFIG_JSON). Copy bridge/config.example.json to that path and ` +
+        `fill in real group JIDs. Original error: ${err.message}`,
+      );
+    }
   }
   return {
     chats: raw.chats || {},
