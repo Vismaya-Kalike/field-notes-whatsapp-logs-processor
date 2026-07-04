@@ -2,6 +2,8 @@ import {
   makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestBaileysVersion,
+  Browsers,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
@@ -9,6 +11,7 @@ import { loadConfig } from './config.js';
 import { storeMessage } from './chatStore.js';
 import { startOutboxWatcher } from './outbox.js';
 import { sendLogoutEmail } from './email.js';
+import { recordSender } from './senders.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 const cfg = loadConfig();
@@ -32,7 +35,14 @@ function toDate(messageTimestamp) {
 
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(cfg.authDir);
-  const sock = makeWASocket({ auth: state, logger, printQRInTerminal: false });
+  const { version } = await fetchLatestBaileysVersion();
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    logger,
+    browser: Browsers.macOS('Chrome'),
+    printQRInTerminal: false,
+  });
 
   startOutboxWatcher({ outboxDir: cfg.outboxDir, selfJid: cfg.selfJid, sock, logger });
 
@@ -62,16 +72,19 @@ async function start() {
       if (!chatName) continue;
 
       const participant = m.key?.participant || m.participant || jid;
-      const sender = cfg.jidToName[participant];
+      const pushName = m.pushName || null;
+      const sender = cfg.jidToName[participant] || pushName || participant;
       const ts = toDate(m.messageTimestamp);
       const text = extractText(m.message);
       const imageMessage = m.message?.imageMessage || null;
+
+      recordSender({ liveDir: cfg.liveDir, chat: chatName, participant, pushName });
 
       await storeMessage({
         ...cfg,
         chatName,
         ts,
-        sender: sender || participant,
+        sender,
         text,
         imageMessage,
         sock,
