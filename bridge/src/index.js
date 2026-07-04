@@ -15,6 +15,7 @@ import { recordSender } from './senders.js';
 import { startIngestScheduler } from './ingest.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
+const waLogger = pino({ level: process.env.WA_LOG_LEVEL || 'warn' });
 const cfg = loadConfig();
 
 function extractText(message) {
@@ -40,7 +41,7 @@ async function start() {
   const sock = makeWASocket({
     version,
     auth: state,
-    logger,
+    logger: waLogger,
     browser: Browsers.macOS('Chrome'),
     printQRInTerminal: false,
   });
