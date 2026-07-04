@@ -1,6 +1,8 @@
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestBaileysVersion,
+  Browsers,
 } from '@whiskeysockets/baileys';
 import path from 'node:path';
 import pino from 'pino';
@@ -11,7 +13,14 @@ const AUTH_DIR = process.env.AUTH_DIR || path.resolve(process.cwd(), 'auth_info'
 
 async function start() {
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-  const sock = makeWASocket({ auth: state, logger, printQRInTerminal: false });
+  const { version } = await fetchLatestBaileysVersion();
+  const sock = makeWASocket({
+    version,
+    auth: state,
+    logger,
+    browser: Browsers.macOS('Chrome'),
+    printQRInTerminal: false,
+  });
 
   sock.ev.on('creds.update', saveCreds);
 
