@@ -11,6 +11,9 @@ importers:
       '@whiskeysockets/baileys':
         specifier: 6.7.23
         version: 6.7.23(audio-decode@2.2.3)(sharp@0.35.1)
+      node-cron:
+        specifier: ^4.5.0
+        version: 4.5.0
       nodemailer:
         specifier: ^6.9.0
         version: 6.10.1
@@ -813,6 +816,10 @@ packages:
     resolution: {integrity: sha512-ZB9RH/39qpq5Vu6Y+NmUaFhQR6pp+M2Xt76XBnEwDaGcVAqhlvxrl3B2bKS5D3NH3QR76v3aSrKaF/Kiy7lEtQ==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
+
+  node-cron@4.5.0:
+    resolution: {integrity: sha512-4Trh+kjvbXokyJkwQumvD5YAgeJfgHLR/sKyu71uSmxfCR5QMO1hldpvmFZOICN5pLgNY+J5Y8+ar3XKo5/4tQ==}
+    engines: {node: '>=20'}
 
   node-wav@0.0.2:
     resolution: {integrity: sha512-M6Rm/bbG6De/gKGxOpeOobx/dnGuP0dz40adqx38boqHhlWssBJZgLCPBNtb9NkrmnKYiV04xELq+R6PFOnoLA==}
@@ -1736,6 +1743,8 @@ snapshots:
       - supports-color
 
   nanoid@3.3.12: {}
+
+  node-cron@4.5.0: {}
 
   node-wav@0.0.2:
     optional: true

@@ -12,6 +12,7 @@ import { storeMessage } from './chatStore.js';
 import { startOutboxWatcher } from './outbox.js';
 import { sendLogoutEmail } from './email.js';
 import { recordSender } from './senders.js';
+import { startIngestScheduler } from './ingest.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 const cfg = loadConfig();
@@ -93,6 +94,8 @@ async function start() {
     }
   });
 }
+
+startIngestScheduler({ logger });
 
 start().catch((err) => {
   logger.error({ err }, 'bridge crashed');

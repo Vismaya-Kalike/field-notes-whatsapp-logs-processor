@@ -1,0 +1,25 @@
+FROM node:20-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR /app
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python
+ENV UV_FROZEN=1
+RUN uv python install 3.11
+
+COPY pyproject.toml uv.lock ./
+RUN uv sync --no-dev
+
+RUN corepack enable
+COPY bridge/package.json bridge/pnpm-lock.yaml ./bridge/
+RUN cd bridge && pnpm install --frozen-lockfile --prod
+
+COPY . .
+
+WORKDIR /app/bridge
+CMD ["node", "src/index.js"]
