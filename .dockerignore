@@ -4,3 +4,7 @@
 whatsapp_data_*
 data/live
 *.zip
+.git
+.env
+.env.*
+bridge/config.json
