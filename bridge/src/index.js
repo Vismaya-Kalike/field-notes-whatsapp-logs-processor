@@ -13,6 +13,7 @@ import { startOutboxWatcher } from './outbox.js';
 import { sendLogoutEmail } from './email.js';
 import { recordSender } from './senders.js';
 import { startIngestScheduler } from './ingest.js';
+import { dumpRosters } from './rosters.js';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 const waLogger = pino({ level: process.env.WA_LOG_LEVEL || 'warn' });
@@ -53,7 +54,10 @@ async function start() {
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
     if (qr) qrcode.generate(qr, { small: true });
-    if (connection === 'open') logger.info('bridge connected');
+    if (connection === 'open') {
+      logger.info('bridge connected');
+      dumpRosters({ sock, chats: cfg.chats, liveDir: cfg.liveDir, logger });
+    }
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut) {
